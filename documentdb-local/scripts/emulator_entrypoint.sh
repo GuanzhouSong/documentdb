@@ -371,7 +371,7 @@ if [ "$START_POSTGRESQL" = "true" ]; then
     echo "Setting permissions on $DATA_PATH"
     sudo chmod -R 750 "$DATA_PATH"
     
-    if ALLOW_EXTERNAL_CONNECTIONS="true"; then
+    if [ "${ALLOW_EXTERNAL_CONNECTIONS:-}" = "true" ]; then
         echo "Allowing external connections to PostgreSQL..."
         export PGOPTIONS="-e"
     fi
