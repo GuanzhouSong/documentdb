@@ -118,29 +118,38 @@ Optional arguments:
                         docker run: --mount type=bind,source=./.local/data,target=/usr/documentdb/data)
                         Defaults to /data
                         Overrides DATA_PATH environment variable.
-  --documentdb-port     The port of the DocumentDB endpoint on the container. 
+  --documentdb-port [PORT]
+                        The port of the DocumentDB endpoint on the container.
                         You still need to publish this port (e.g. -p 10260:10260).
                         Defaults to 10260
                         Overrides DOCUMENTDB_PORT environment variable.
-  --enable-telemetry    Enable telemetry data sent to the usage colletor (Azure Application Insights). 
+  --enable-telemetry [true|false]
+                        Enable telemetry data sent to the usage collector.
+                        Defaults to false.
                         Overrides ENABLE_TELEMETRY environment variable.
-  --log-level           The verbosity of logs that will be emitted.
+  --log-level [LEVEL]   The verbosity of logs that will be emitted.
                         Overrides LOG_LEVEL environment variable.
                           quiet, error, warn, info (default), debug, trace
-  --username            Specify the username for the DocumentDB.
+  --username [NAME]     Specify the username for the DocumentDB.
                         Defaults to default_user
                         Overrides USERNAME environment variable.
-  --password            Specify the password for the DocumentDB.
-                        REQUIRED.
+  --password [PASSWORD] Specify the password for the DocumentDB.
+                        Always set this. If unset, a well-known built-in default is
+                        used and anyone who can reach the published port can
+                        authenticate with it.
                         Overrides PASSWORD environment variable.
-  --create-user         Specify whether to create a user. 
+  --create-user [true|false]
+                        Specify whether to create a user.
                         Defaults to true.
-  --start-pg            Specify whether to start the PostgreSQL server.
+                        Overrides CREATE_USER environment variable.
+  --start-pg [true|false]
+                        Specify whether to start the PostgreSQL server.
                         Defaults to true.
-  --pg-port             Specify the port for the PostgreSQL server.
+                        Overrides START_POSTGRESQL environment variable.
+  --pg-port [PORT]      Specify the port for the PostgreSQL server.
                         Defaults to 9712.
                         Overrides POSTGRESQL_PORT environment variable.
-  --owner               Specify the owner of the DocumentDB.
+  --owner [NAME]        Specify the owner of the DocumentDB.
                         Overrides OWNER environment variable.
                         defaults to documentdb.
   --allow-external-connections [true|false]

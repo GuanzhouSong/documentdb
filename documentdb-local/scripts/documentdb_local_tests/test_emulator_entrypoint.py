@@ -1333,6 +1333,45 @@ class EntrypointUxTextTests(unittest.TestCase):
         self.assertNotIn("Overrides PORT environment variable.", text)
         self.assertNotIn("Overrides PG_PORT environment variable.", text)
 
+    def test_help_documents_env_vars_for_every_flag_that_reads_one(self):
+        # --create-user and --start-pg are honored as CREATE_USER /
+        # START_POSTGRESQL (set in Dockerfile_documentdb_local), but the help
+        # used to list no env var for either, hiding the only docker-run -e path.
+        text = self._text()
+        self.assertIn("Overrides CREATE_USER environment variable.", text)
+        self.assertIn("Overrides START_POSTGRESQL environment variable.", text)
+
+    def test_help_does_not_advertise_nonexistent_telemetry_backend(self):
+        # The usage collector is not Azure Application Insights; no such
+        # integration exists in this repo. Naming it sends operators looking
+        # for an instrumentation key that nothing consumes.
+        text = self._text()
+        self.assertNotIn("Application Insights", text)
+        # Also guard the long-standing "colletor" typo it appeared alongside.
+        self.assertNotIn("colletor", text)
+
+    def test_help_does_not_claim_password_is_required(self):
+        # PASSWORD falls back to a built-in default before the "required"
+        # check runs, so that check never fires. Help must not promise a
+        # guard the script does not enforce.
+        text = self._text()
+        self.assertNotIn("REQUIRED.", text)
+
+    def test_help_shows_value_placeholder_for_value_taking_flags(self):
+        # Each of these parses as `shift; export X=$1; shift`. Documenting them
+        # as bare flags leads operators to write the form that swallows the
+        # next argument -- and the arg loop has no `*)` arm to recover.
+        text = self._text()
+        for flag in (
+            "--enable-telemetry [true|false]",
+            "--create-user [true|false]",
+            "--start-pg [true|false]",
+            "--documentdb-port [PORT]",
+            "--pg-port [PORT]",
+            "--log-level [LEVEL]",
+        ):
+            self.assertIn(flag, text, f"help must show a value placeholder for {flag}")
+
     def test_cleanup_stops_postgresql(self):
         # docker stop must cleanly stop the daemonized PostgreSQL (pg_ctl fast
         # stop) instead of leaving it to be SIGKILLed with WAL recovery next boot.
