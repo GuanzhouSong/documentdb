@@ -76,6 +76,15 @@ PG_PORT=""
 PG_PORT_EXPLICIT=false
 GATEWAY_PORT="${DEFAULT_GATEWAY_PORT}"
 GATEWAY_PORT_EXPLICIT=false
+# Bind the gateway to loopback unless the operator explicitly asks for a
+# network-reachable listener. The gateway itself defaults to all interfaces
+# (`use_local_host` is false when DOCUMENTDB_LISTEN_ADDR carries no host), so a
+# wizard that passed the bare ":PORT" form published a MongoDB-compatible
+# endpoint on every interface of the host, protected only by the admin password
+# and fronted by an auto-generated self-signed certificate. On a cloud VM with a
+# permissive security group that is an internet-reachable database nobody asked
+# for. Exposure is now opt-in via --listen-all.
+LISTEN_ALL=false
 DATA_DIR=""
 DATA_DIR_EXPLICIT=false
 NO_ENABLE=false
@@ -184,6 +193,10 @@ Options:
   --pg-version <VER>      PostgreSQL version (auto-detected if not specified)
   --pg-port <PORT>        PostgreSQL port (default: 9700 + PG_VERSION)
   --listen-port <PORT>    Gateway listen port (default: 10260; also: --gateway-port)
+  --listen-all            Bind the gateway to all interfaces instead of
+                          127.0.0.1 only. The endpoint becomes reachable from
+                          the network, so firewall the port and supply a real
+                          certificate (--tls-cert/--tls-key) before using it.
   --data-dir <DIR>        PostgreSQL data directory
                           (default: /var/lib/documentdb-local/<VER>/data)
   --use-new-postgres-instance
@@ -2355,7 +2368,13 @@ ensure_pg_ident_map() {
     # load SetupConfiguration.json. So the operator's --listen-port has to
     # land in the per-major env file. Thread it through register-gateway.
     if [[ -n "${GATEWAY_PORT}" ]]; then
-        rg_args+=(--listen-addr ":${GATEWAY_PORT}")
+        # Loopback by default; ":PORT" (no host) is what makes the gateway bind
+        # 0.0.0.0 and [::], so it is used only when --listen-all was given.
+        if [[ "${LISTEN_ALL}" == "true" ]]; then
+            rg_args+=(--listen-addr ":${GATEWAY_PORT}")
+        else
+            rg_args+=(--listen-addr "127.0.0.1:${GATEWAY_PORT}")
+        fi
     fi
     # Standalone defaults to TLS auto-gen per design §4.3 — UNLESS the
     # operator explicitly passed --tls-cert/--tls-key (in which case
@@ -3967,6 +3986,10 @@ parse_arguments() {
                 ;;
             --no-enable)
                 NO_ENABLE=true
+                shift
+                ;;
+            --listen-all)
+                LISTEN_ALL=true
                 shift
                 ;;
             --skip-init-data)

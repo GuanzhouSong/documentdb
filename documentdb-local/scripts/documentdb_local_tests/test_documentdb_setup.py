@@ -5897,6 +5897,36 @@ class GatewayEnvFragmentCarriesListenAddrTests(unittest.TestCase):
         self.assertIn('--tls-auto-generate true', body,
                       "setup must enable TLS auto-gen on standalone (design §4.3 default)")
 
+    def test_setup_binds_loopback_unless_listen_all(self):
+        """The gateway binds every interface when DOCUMENTDB_LISTEN_ADDR carries
+        no host (`use_local_host` defaults to false), so passing the bare
+        ":PORT" form unconditionally published the wire-protocol endpoint on
+        every interface of the host - guarded only by the admin password and an
+        auto-generated self-signed certificate. The default must be loopback,
+        with exposure opt-in via --listen-all."""
+        script = SETUP_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("LISTEN_ALL=false", script,
+                      "setup must default to a loopback-only gateway listener")
+        self.assertIn("--listen-all)", script,
+                      "setup must accept --listen-all to opt into an exposed listener")
+
+        match = re.search(
+            r"ensure_pg_ident_map\(\)\s*\{(?P<body>.*?)^\}",
+            script,
+            flags=re.DOTALL | re.MULTILINE,
+        )
+        self.assertIsNotNone(match)
+        body = match.group("body")
+        self.assertIn('--listen-addr "127.0.0.1:${GATEWAY_PORT}"', body,
+                      "setup must bind the gateway to loopback by default")
+        # The all-interfaces form must remain reachable, but only from the
+        # --listen-all branch: an unguarded ":${GATEWAY_PORT}" would restore the
+        # original exposure.
+        exposed = body.index('--listen-addr ":${GATEWAY_PORT}"')
+        guard = body.index('LISTEN_ALL')
+        self.assertLess(guard, exposed,
+                        "the all-interfaces listen address must be guarded by LISTEN_ALL")
+
 
 class BrownfieldUsesDistroSocketTests(unittest.TestCase):
     """Brownfield setup discovered
