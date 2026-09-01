@@ -629,10 +629,15 @@ detect_rhel_crb_method() {
                 {
                     id = tolower($1)
                     expected = "codeready-builder-for-rhel-9-" tolower(arch) "-rhui-rpms"
+                    aws = "codeready-builder-for-rhel-9-rhui-rpms"
                     if (id == expected) {
                         print $1
                         found = 1
                         exit
+                    }
+                    if ((id == aws || id == "rhui-" aws) && fallback == "") {
+                        fallback = $1
+                        next
                     }
                     if (id ~ /codeready-builder/ &&
                         id ~ /rhel-9/ &&
@@ -646,6 +651,8 @@ detect_rhel_crb_method() {
                 END {
                     if (!found && candidate != "") {
                         print candidate
+                    } else if (!found && fallback != "") {
+                        print fallback
                     }
                 }
             '

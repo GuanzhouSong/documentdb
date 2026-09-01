@@ -181,6 +181,27 @@ else
     pass "RHEL RHUI discovery ignores debug/source repositories"
 fi
 
+for arch_pair in "x86_64:x86_64" "aarch64:aarch64"; do
+    kernel_arch="${arch_pair%%:*}"
+    native_arch="${arch_pair##*:}"
+    new_root rhel 9.4
+    root="${NEW_ROOT}"
+    output="$(
+        env \
+            DOCUMENTDB_INSTALLER_TESTING=true \
+            DOCUMENTDB_INSTALLER_TEST_ROOT="${root}" \
+            DOCUMENTDB_INSTALLER_TEST_UNAME_M="${kernel_arch}" \
+            DOCUMENTDB_INSTALLER_TEST_NATIVE_ARCH="${native_arch}" \
+            DOCUMENTDB_INSTALLER_TEST_RHEL_REPOLIST='
+codeready-builder-for-rhel-9-rhui-debug-rpms disabled
+codeready-builder-for-rhel-9-rhui-rpms disabled
+codeready-builder-for-rhel-9-rhui-source-rpms disabled' \
+            sh "${INSTALLER}" --dry-run 2>&1
+    )"
+    assert_contains "AWS RHEL ${kernel_arch} selects arch-less binary CRB repo" "${output}" \
+        "dnf config-manager --set-enabled codeready-builder-for-rhel-9-rhui-rpms"
+done
+
 assert_contains "EPEL bootstrap key fingerprint is pinned" "${output}" \
     "FF8AD1344597106ECE813B918A3872BF3228467C"
 assert_contains "PGDG RPM bootstrap key fingerprint is pinned" "${output}" \
