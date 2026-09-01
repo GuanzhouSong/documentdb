@@ -150,6 +150,8 @@ assert_contains "CentOS Stream uses EL9 aarch64 PGDG" "${output}" "EL-9-aarch64"
 
 new_root rhel 9.4
 root="${NEW_ROOT}"
+mkdir -p "${root}/etc/pki/consumer"
+printf 'registered\n' > "${root}/etc/pki/consumer/cert.pem"
 expect_success "RHEL aarch64 dry-run succeeds" \
     run_installer "${root}" aarch64 aarch64 --pg-major 18
 output="${LAST_OUTPUT}"
@@ -164,12 +166,29 @@ output="$(
     env \
         DOCUMENTDB_INSTALLER_TESTING=true \
         DOCUMENTDB_INSTALLER_TEST_ROOT="${root}" \
-        DOCUMENTDB_INSTALLER_TEST_RHEL_REGISTERED=false \
-        DOCUMENTDB_INSTALLER_TEST_RHEL_CRB_REPO=codeready-builder-for-rhel-9-rhui-rpms \
+        DOCUMENTDB_INSTALLER_TEST_RHEL_REPOLIST='
+codeready-builder-for-rhel-9-x86_64-rhui-debug-rpms disabled
+codeready-builder-for-rhel-9-x86_64-rhui-rpms disabled
+codeready-builder-for-rhel-9-x86_64-rhui-source-rpms disabled' \
         sh "${INSTALLER}" --dry-run 2>&1
 )"
 assert_contains "RHEL RHUI host enables discovered CodeReady Builder repo" "${output}" \
-    "dnf config-manager --set-enabled codeready-builder-for-rhel-9-rhui-rpms"
+    "dnf config-manager --set-enabled codeready-builder-for-rhel-9-x86_64-rhui-rpms"
+if grep -Fq -- "rhui-debug-rpms" <<< "${output}" &&
+   grep -Fq -- "config-manager --set-enabled codeready-builder-for-rhel-9-x86_64-rhui-debug-rpms" <<< "${output}"; then
+    fail "RHEL RHUI discovery selected the debug repository"
+else
+    pass "RHEL RHUI discovery ignores debug/source repositories"
+fi
+
+assert_contains "EPEL bootstrap key fingerprint is pinned" "${output}" \
+    "FF8AD1344597106ECE813B918A3872BF3228467C"
+assert_contains "PGDG RPM bootstrap key fingerprint is pinned" "${output}" \
+    "D4BF08AE67A0B4C7A1DBCCD240BCA2B408B40D20"
+assert_contains "EPEL bootstrap RPM requires signature verification" "${output}" \
+    "dnf --setopt=localpkg_gpgcheck=1 install -y /tmp/epel-release-latest-9.noarch.rpm"
+assert_contains "PGDG bootstrap RPM requires signature verification" "${output}" \
+    "dnf --setopt=localpkg_gpgcheck=1 install -y /tmp/pgdg-redhat-repo-latest.noarch.rpm"
 
 new_root ubuntu 24.04
 root="${NEW_ROOT}"

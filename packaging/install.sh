@@ -20,8 +20,12 @@ DEFAULT_PG_MAJOR="18"
 DEFAULT_ADMIN_USER="admin"
 DEFAULT_LISTEN_PORT="10260"
 PGDG_APT_KEY_FINGERPRINT="B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+EPEL_KEY_FINGERPRINT="FF8AD1344597106ECE813B918A3872BF3228467C"
+PGDG_RPM_KEY_FINGERPRINT="D4BF08AE67A0B4C7A1DBCCD240BCA2B408B40D20"
 DOCUMENTDB_KEY_FINGERPRINT="1F748DA911519E749521438252101F285C52B856"
 PGDG_APT_KEY_URL="https://www.postgresql.org/media/keys/ACCC4CF8.asc"
+EPEL_KEY_URL="https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-9"
+PGDG_RPM_KEY_URL="https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL"
 DOCUMENTDB_KEY_URL="https://documentdb.io/documentdb-archive-keyring.gpg"
 EPEL_RELEASE_URL="https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm"
 
@@ -606,29 +610,45 @@ preflight_apt_repositories() {
 }
 
 detect_rhel_crb_method() {
-    if [ "${TESTING}" = "true" ]; then
-        if [ "${DOCUMENTDB_INSTALLER_TEST_RHEL_REGISTERED:-true}" = "true" ]; then
-            RHEL_CRB_METHOD="subscription-manager"
-            RHEL_CRB_REPO="codeready-builder-for-rhel-9-${RPM_ARCH}-rpms"
-            return
-        fi
-        RHEL_CRB_REPO="${DOCUMENTDB_INSTALLER_TEST_RHEL_CRB_REPO:-}"
-        [ -n "${RHEL_CRB_REPO}" ] ||
-            die "RHEL 9 is not registered and no RHUI CodeReady Builder repository is available."
-        RHEL_CRB_METHOD="dnf"
-        return
-    fi
-
-    if command_exists subscription-manager &&
-       subscription-manager identity >/dev/null 2>&1; then
+    consumer_cert="$(system_path /etc/pki/consumer/cert.pem)"
+    if command_exists subscription-manager && [ -s "${consumer_cert}" ]; then
         RHEL_CRB_METHOD="subscription-manager"
         RHEL_CRB_REPO="codeready-builder-for-rhel-9-${RPM_ARCH}-rpms"
         return
     fi
 
+    if [ "${TESTING}" = "true" ]; then
+        repolist="${DOCUMENTDB_INSTALLER_TEST_RHEL_REPOLIST:-}"
+    else
+        repolist="$(dnf -q repolist --all 2>/dev/null || true)"
+    fi
+
     RHEL_CRB_REPO="$(
-        dnf -q repolist --all 2>/dev/null |
-            awk 'tolower($1) ~ /codeready-builder/ && tolower($1) ~ /rhel-9/ { print $1; exit }'
+        printf '%s\n' "${repolist}" |
+            awk -v arch="${RPM_ARCH}" '
+                {
+                    id = tolower($1)
+                    expected = "codeready-builder-for-rhel-9-" tolower(arch) "-rhui-rpms"
+                    if (id == expected) {
+                        print $1
+                        found = 1
+                        exit
+                    }
+                    if (id ~ /codeready-builder/ &&
+                        id ~ /rhel-9/ &&
+                        id ~ tolower(arch) &&
+                        id ~ /rpms$/ &&
+                        id !~ /(debug|source)-rpms$/ &&
+                        candidate == "") {
+                        candidate = $1
+                    }
+                }
+                END {
+                    if (!found && candidate != "") {
+                        print candidate
+                    }
+                }
+            '
     )"
     [ -n "${RHEL_CRB_REPO}" ] ||
         die "RHEL 9 is not registered with subscription-manager and no RHUI CodeReady Builder repository was found."
@@ -826,27 +846,60 @@ ensure_apt_keyring() {
     run_root install -D -m 0644 "${binary}" "${destination}"
 }
 
-ensure_rpm_documentdb_key() {
-    destination="$(system_path /etc/pki/rpm-gpg/RPM-GPG-KEY-documentdb)"
-    downloaded="${TMP_DIR}/RPM-GPG-KEY-documentdb"
+ensure_rpm_key() {
+    rpm_key_destination="$1"
+    rpm_key_url="$2"
+    rpm_key_expected="$3"
+    rpm_key_label="$4"
+    rpm_key_downloaded="${TMP_DIR:-/tmp}/$(basename "${rpm_key_destination}")"
 
     if [ "${DRY_RUN}" = "true" ]; then
-        log "Would verify or install ${destination}."
-        download_key "${DOCUMENTDB_KEY_URL}" "${downloaded}" \
-            "${DOCUMENTDB_KEY_FINGERPRINT}" "DocumentDB"
-        run_root rpm --import "${destination}"
+        log "Would verify or install ${rpm_key_destination} for ${rpm_key_label}."
+        download_key "${rpm_key_url}" "${rpm_key_downloaded}" \
+            "${rpm_key_expected}" "${rpm_key_label}"
+        run_root rpm --import "${rpm_key_destination}"
         return
     fi
 
-    if [ -f "${destination}" ]; then
-        verify_key_fingerprint "${destination}" \
-            "${DOCUMENTDB_KEY_FINGERPRINT}" "DocumentDB"
+    if [ -f "${rpm_key_destination}" ]; then
+        verify_key_fingerprint "${rpm_key_destination}" \
+            "${rpm_key_expected}" "${rpm_key_label}"
     else
-        download_key "${DOCUMENTDB_KEY_URL}" "${downloaded}" \
-            "${DOCUMENTDB_KEY_FINGERPRINT}" "DocumentDB"
-        run_root install -D -m 0644 "${downloaded}" "${destination}"
+        download_key "${rpm_key_url}" "${rpm_key_downloaded}" \
+            "${rpm_key_expected}" "${rpm_key_label}"
+        run_root install -D -m 0644 "${rpm_key_downloaded}" "${rpm_key_destination}"
     fi
-    run_root_no_stdin rpm --import "${destination}"
+    run_root_no_stdin rpm --import "${rpm_key_destination}"
+}
+
+install_verified_repository_rpm() {
+    repository_rpm_url="$1"
+    repository_rpm_filename="$2"
+    repository_key_destination="$3"
+    repository_key_url="$4"
+    repository_key_fingerprint="$5"
+    repository_label="$6"
+    repository_rpm_path="${TMP_DIR:-/tmp}/${repository_rpm_filename}"
+
+    ensure_rpm_key "${repository_key_destination}" "${repository_key_url}" \
+        "${repository_key_fingerprint}" "${repository_label}"
+
+    if [ "${DRY_RUN}" = "true" ]; then
+        log "Would download ${repository_label} repository package from ${repository_rpm_url}."
+    else
+        strict_curl "${repository_rpm_url}" "${repository_rpm_path}"
+    fi
+
+    run_root_no_stdin dnf --setopt=localpkg_gpgcheck=1 install -y \
+        "${repository_rpm_path}"
+
+    if [ "${DRY_RUN}" = "false" ]; then
+        # The repository package owns the same key path. Re-check it after the
+        # transaction so the enabled repositories cannot silently replace the
+        # independently verified bootstrap key.
+        verify_key_fingerprint "${repository_key_destination}" \
+            "${repository_key_fingerprint}" "${repository_label}"
+    fi
 }
 
 create_temp_dir() {
@@ -1025,6 +1078,8 @@ rpm_package_installed() {
 install_rhel_family() {
     docdb_repo="$(system_path /etc/yum.repos.d/documentdb.repo)"
     docdb_key="$(system_path /etc/pki/rpm-gpg/RPM-GPG-KEY-documentdb)"
+    epel_key="$(system_path /etc/pki/rpm-gpg/RPM-GPG-KEY-EPEL-9)"
+    pgdg_key="$(system_path /etc/pki/rpm-gpg/PGDG-RPM-GPG-KEY-RHEL)"
     pgdg_repo_url="https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-${RPM_ARCH}/pgdg-redhat-repo-latest.noarch.rpm"
 
     require_command curl
@@ -1046,7 +1101,13 @@ install_rhel_family() {
     esac
 
     if ! rpm_package_installed epel-release; then
-        run_root_no_stdin dnf install -y "${EPEL_RELEASE_URL}"
+        install_verified_repository_rpm \
+            "${EPEL_RELEASE_URL}" \
+            "epel-release-latest-9.noarch.rpm" \
+            "${epel_key}" \
+            "${EPEL_KEY_URL}" \
+            "${EPEL_KEY_FINGERPRINT}" \
+            "EPEL 9"
     else
         log "Reusing the installed epel-release package."
     fi
@@ -1056,14 +1117,21 @@ install_rhel_family() {
     fi
 
     if [ "${PGDG_REPO_PRESENT}" = "false" ]; then
-        run_root_no_stdin dnf install -y "${pgdg_repo_url}"
+        install_verified_repository_rpm \
+            "${pgdg_repo_url}" \
+            "pgdg-redhat-repo-latest.noarch.rpm" \
+            "${pgdg_key}" \
+            "${PGDG_RPM_KEY_URL}" \
+            "${PGDG_RPM_KEY_FINGERPRINT}" \
+            "PGDG RPM"
     else
         log "Reusing the existing PGDG DNF repository configuration."
     fi
 
     run_root_no_stdin dnf -qy module disable postgresql
 
-    ensure_rpm_documentdb_key
+    ensure_rpm_key "${docdb_key}" "${DOCUMENTDB_KEY_URL}" \
+        "${DOCUMENTDB_KEY_FINGERPRINT}" "DocumentDB"
     if [ "${DOCUMENTDB_REPO_PRESENT}" = "false" ]; then
         write_root_file "${docdb_repo}" 0644 "${DESIRED_DOCUMENTDB_RPM_REPO}"
     else
