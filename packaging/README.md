@@ -19,6 +19,44 @@ below, which is the authoritative statement of the CI scope); other OS/PG
 combinations are exposed by the build scripts below for community packagers and
 validation runs.
 
+## One-command native install
+
+`packaging/install.sh` is the clean-host bootstrap for the current package
+repository. It detects the host, configures the required signed repositories,
+installs the stand-alone `documentdb-N` package, and runs `documentdb-setup`
+to create and start a new private PostgreSQL-backed DocumentDB instance.
+
+```sh
+# Preview every operation without changing the host.
+./packaging/install.sh --dry-run
+
+# Interactive install. PostgreSQL 18 is the default.
+./packaging/install.sh
+
+# Select PostgreSQL 17 instead.
+./packaging/install.sh --pg-major 17
+```
+
+Supported native matrix:
+
+| Distribution | Architectures | PostgreSQL |
+|---|---|---|
+| Ubuntu 24.04 LTS | amd64, arm64 | 17, 18 |
+| RHEL 9 (registered or RHUI with CodeReady Builder), Rocky Linux / AlmaLinux / CentOS Stream 9 | x86_64, aarch64 | 17, 18 |
+
+The installer requires a running systemd host and root or `sudo` access. It is
+deliberately a **new-install bootstrap**, not an upgrade or recovery tool: it
+refuses existing DocumentDB packages, managed state, and data directories. If
+package installation succeeded but `documentdb-setup` later failed, resolve the
+reported error and run the setup command printed by the installer; it never
+removes or reuses existing data automatically.
+
+For unattended installation, pass `--yes --admin-password-file <FILE>`.
+Passwords are copied into a private temporary file and are never placed in the
+command line or environment. The setup wizard currently binds the gateway on
+all interfaces with a self-signed TLS certificate, so restrict the selected
+port with the host firewall before exposing it to an untrusted network.
+
 ## What CI builds (package-production tiers)
 
 First-party CI does **not** build the full distro × PG-major cartesian product.

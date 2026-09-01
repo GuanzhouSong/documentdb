@@ -123,6 +123,18 @@ jobs:
           echo "DOCUMENTDB_VERSION=${{ steps.version.outputs.version }}" >> "$GITHUB_ENV"
           echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
+      - name: Test one-command installer behavior
+        if: matrix.os == 'ubuntu24.04' && matrix.arch == 'amd64' && matrix.pg_version == env.PAVED_PG_MAJOR
+        run: bash packaging/test_packages/test-install-script.sh
+
+      # Exercise the real host probes on both Tier-1 architectures. The
+      # deterministic suite above covers the RPM-family branches; this dry run
+      # additionally proves the script recognizes GitHub's native Ubuntu
+      # runners without mutating their repositories or packages.
+      - name: Verify installer dry-run on native runner
+        if: matrix.os == 'ubuntu24.04'
+        run: sh packaging/install.sh --dry-run --pg-major "${{ matrix.pg_version }}"
+
       - name: Build Debian Package
         run: |
           # Build the extension .deb only. `build_packages.sh
