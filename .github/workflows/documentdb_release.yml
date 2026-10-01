@@ -212,11 +212,6 @@ jobs:
           curl -fsSLo documentdb-install.sh https://github.com/${{ github.repository }}/releases/download/v${VERSION_DASH}/install.sh && sh documentdb-install.sh
           \`\`\`
 
-          Without a version option, the installer follows the stable package
-          repository, not the release containing the script. For supported
-          prerelease selections, use the current installer and instructions at
-          <https://documentdb.io/docs/getting-started/release-candidate/>.
-
           **Repository-backed install (recommended):** see <https://documentdb.io> → Package Installation. Repository publication follows shortly after this release.
 
           ### First-party (Tier 1) targets
