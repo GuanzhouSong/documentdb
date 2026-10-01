@@ -5,9 +5,8 @@
 # Clean-host bootstrap for stable or explicitly selected RC packages.
 #
 # The script trusts the public package repositories, installs
-# documentdb-<major>, and hands provisioning to documentdb-setup. It keeps no
-# state of its own: what it does is derived from the installed packages and
-# from the configuration documentdb-setup owns.
+# documentdb-<major>, and hands provisioning to documentdb-setup. RC installs
+# record their origin because RC and final packages can have identical versions.
 #
 # Supported hosts:
 #   Ubuntu 24.04 LTS                          amd64, arm64
@@ -29,6 +28,7 @@ BLOCKED_ADMIN_PREFIXES="documentdb citus pg internal_role"
 INSTALL_LOCK_DIR="/run/lock/documentdb-installer.lock"
 STATE_ROOT="/etc/documentdb/local"
 DATA_ROOT="/var/lib/documentdb-local"
+RC_STATE_FILE="/etc/documentdb/installer-release-candidate"
 
 PGDG_APT_KEY_URL="https://www.postgresql.org/media/keys/ACCC4CF8.asc"
 PGDG_APT_KEY_FINGERPRINT="B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
@@ -603,6 +603,10 @@ detect_installation_state() {
     SELECTED_PACKAGE_INSTALLED="false"
     SETUP_CONFIGURED="false"
 
+    if [ -e "$(system_path "${RC_STATE_FILE}")" ] ||
+        [ -L "$(system_path "${RC_STATE_FILE}")" ]; then
+        die "A release-candidate installation was started on this host. Use a fresh host; rerunning this installer, including stable mode, cannot upgrade or adopt an RC."
+    fi
     installed_packages="$(list_documentdb_packages)"
     if [ "${RELEASE_VERSION}" != "stable" ]; then
         if [ -n "${installed_packages}" ] ||
@@ -791,6 +795,9 @@ preflight_repositories() {
         preflight_apt_repositories
     else
         preflight_rpm_repositories
+    fi
+    if [ "${RELEASE_VERSION}" != "stable" ] && [ "${DOCUMENTDB_REPO_PRESENT}" = "true" ]; then
+        die "RC installation requires a clean host without a DocumentDB stable repository. Existing repository configuration is not removed."
     fi
 }
 
@@ -1131,14 +1138,16 @@ install_ubuntu() {
             0644 "${DESIRED_PGDG_SOURCE}"
     fi
 
-    ensure_apt_keyring \
-        "$(system_path /usr/share/keyrings/documentdb-archive-keyring.gpg)" \
-        "${DOCUMENTDB_KEY_URL}" "${DOCUMENTDB_KEY_FINGERPRINT}" "DocumentDB"
-    if [ "${DOCUMENTDB_REPO_PRESENT}" = "true" ]; then
-        log "Reusing the existing DocumentDB APT repository configuration."
-    else
-        write_root_file "$(system_path /etc/apt/sources.list.d/documentdb.list)" \
-            0644 "${DESIRED_DOCUMENTDB_SOURCE}"
+    if [ "${RELEASE_VERSION}" = "stable" ]; then
+        ensure_apt_keyring \
+            "$(system_path /usr/share/keyrings/documentdb-archive-keyring.gpg)" \
+            "${DOCUMENTDB_KEY_URL}" "${DOCUMENTDB_KEY_FINGERPRINT}" "DocumentDB"
+        if [ "${DOCUMENTDB_REPO_PRESENT}" = "true" ]; then
+            log "Reusing the existing DocumentDB APT repository configuration."
+        else
+            write_root_file "$(system_path /etc/apt/sources.list.d/documentdb.list)" \
+                0644 "${DESIRED_DOCUMENTDB_SOURCE}"
+        fi
     fi
 
     apt_get update
@@ -1206,13 +1215,15 @@ install_rhel_family() {
 
     run_root_no_stdin dnf -qy module disable postgresql
 
-    ensure_rpm_key "$(system_path /etc/pki/rpm-gpg/RPM-GPG-KEY-documentdb)" \
-        "${DOCUMENTDB_KEY_URL}" "${DOCUMENTDB_KEY_FINGERPRINT}" "DocumentDB"
-    if [ "${DOCUMENTDB_REPO_PRESENT}" = "true" ]; then
-        log "Reusing the existing DocumentDB DNF repository configuration."
-    else
-        write_root_file "$(system_path /etc/yum.repos.d/documentdb.repo)" \
-            0644 "${DESIRED_DOCUMENTDB_RPM_REPO}"
+    if [ "${RELEASE_VERSION}" = "stable" ]; then
+        ensure_rpm_key "$(system_path /etc/pki/rpm-gpg/RPM-GPG-KEY-documentdb)" \
+            "${DOCUMENTDB_KEY_URL}" "${DOCUMENTDB_KEY_FINGERPRINT}" "DocumentDB"
+        if [ "${DOCUMENTDB_REPO_PRESENT}" = "true" ]; then
+            log "Reusing the existing DocumentDB DNF repository configuration."
+        else
+            write_root_file "$(system_path /etc/yum.repos.d/documentdb.repo)" \
+                0644 "${DESIRED_DOCUMENTDB_RPM_REPO}"
+        fi
     fi
 
     run_root_no_stdin dnf clean expire-cache
@@ -1278,6 +1289,7 @@ install_release_packages() {
         fi
         set -- "$@" "${release_dir}/${release_package}"
     done
+    write_root_file "$(system_path "${RC_STATE_FILE}")" 0644 "${RELEASE_VERSION}"
     if [ "${PACKAGE_FAMILY}" = "apt" ]; then
         apt_get install -y "$@"
     else

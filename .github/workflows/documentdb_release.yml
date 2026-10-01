@@ -213,8 +213,8 @@ jobs:
           \`\`\`
 
           Without a version option, the installer follows the stable package
-          repository, not the release containing the script. For explicit RC1
-          installation, use the current installer and instructions at
+          repository, not the release containing the script. For supported
+          prerelease selections, use the current installer and instructions at
           <https://documentdb.io/docs/getting-started/release-candidate/>.
 
           **Repository-backed install (recommended):** see <https://documentdb.io> → Package Installation. Repository publication follows shortly after this release.

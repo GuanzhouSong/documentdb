@@ -361,6 +361,7 @@ test_release_selection() {
                     run_installer "${root}" --version v1.0-RC1 --pg-major "${pg}"
                 assert_has "RC warning" "No RC maintenance or supported upgrades."
                 assert_has "RC URL" "releases/download/v1.0-RC1/SHA256SUMS"
+                assert_lacks "RC never subscribes to stable repository" "https://documentdb.io/"
                 assert_lacks "RC does not request stable package" "install -y documentdb-${pg}"
                 if [[ "${id}" == ubuntu ]]; then
                     package="ubuntu24.04-postgresql-${pg}-documentdb_1.0-0_${native}.deb"
@@ -398,6 +399,18 @@ test_release_selection() {
     root="$(new_root ubuntu 24.04)"
     mkdir -p "${root}/var/lib/documentdb-local/17/data"
     expect_failure "RC refuses other PG data" "Release candidates require a clean host" \
+        run_installer "${root}" --version v1.0-RC1
+    root="$(new_root ubuntu 24.04)"
+    mkdir -p "${root}/etc/documentdb"
+    printf 'v1.0-RC1\n' > "${root}/etc/documentdb/installer-release-candidate"
+    for version in stable v1.0-RC1; do
+        expect_failure "${version} refuses recorded RC without packages or data" \
+            "cannot upgrade or adopt an RC" run_installer "${root}" --version "${version}"
+    done
+    root="$(new_root ubuntu 24.04)"
+    printf 'deb [arch=amd64 signed-by=/usr/share/keyrings/documentdb-archive-keyring.gpg] https://documentdb.io/deb stable ubuntu24\n' \
+        > "${root}/etc/apt/sources.list.d/documentdb.list"
+    expect_failure "RC refuses preconfigured stable repository" "without a DocumentDB stable repository" \
         run_installer "${root}" --version v1.0-RC1
 }
 
@@ -441,10 +454,15 @@ apt_get() {
     for argument in "$@"; do printf ' <%s>' "${argument}"; done
     printf '\n'
 }
+write_root_file() {
+    printf 'RC-MARKER %s %s %s\n' "$1" "$2" "$3"
+}
 install_release_packages
 RUNNER
     expect_success "verified selected packages" sh "${runner}" "${library}" "${fixture}" good
     assert_has "verified packages reach one transaction" "TRANSACTION <install> <-y>"
+    assert_has "RC origin recorded before package installation" \
+        $'RC-MARKER /etc/documentdb/installer-release-candidate 0644 v1.0-RC1\nTRANSACTION'
     assert_has "verified transaction contains common" "ubuntu24.04-documentdb-common_1.0.0_all.deb>"
     assert_has "verified transaction contains gateway" "ubuntu24.04-documentdb-gateway_1.0.0_arm64.deb>"
     for mode in missing corrupt manifest; do
@@ -456,6 +474,7 @@ RUNNER
         expect_failure "${mode} release download" "${name}" \
             sh "${runner}" "${library}" "${fixture}" "${mode}"
         assert_lacks "${mode} never installs packages or falls back" "TRANSACTION"
+        assert_lacks "${mode} does not record an RC installation" "RC-MARKER"
     done
     sed '/ubuntu24.04-documentdb-common_/d' "${fixture}/SHA256SUMS" > "${fixture}/missing-sums"
     cp "${fixture}/missing-sums" "${fixture}/SHA256SUMS"

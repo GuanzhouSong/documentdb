@@ -69,7 +69,11 @@ This downloads the five matching packages from the RC1 release and verifies
 them against a pinned checksum manifest before installation. PostgreSQL 17
 is also supported with `--pg-major 17`. RC1 is not maintained and has no
 supported upgrade path; existing DocumentDB packages, configuration, or data
-are refused. Invalid selections and failed downloads never fall back to stable.
+are refused. The RC path does not configure a DocumentDB stable repository
+and refuses an existing one. Before installing RC packages, it records
+`/etc/documentdb/installer-release-candidate`; later installer runs refuse
+this host, even in stable mode. This also covers partial package installs.
+Invalid selections and failed downloads never fall back to stable.
 The original installer attached to the RC1 release lacks this option; use
 the website installer above.
 
