@@ -282,6 +282,9 @@ test_arguments() {
 unknown option|Unknown option: --bogus|--bogus
 positional argument|Unexpected positional arguments|-- extra
 missing pg-major value|--pg-major requires a value|--pg-major
+missing release value|--version requires a value|--version
+unknown release|--version must be stable or v1.0-RC1|--version v9.9-RC1
+release path traversal|--version must be stable or v1.0-RC1|--version ../latest
 missing admin-user value|--admin-user requires a value|--admin-user
 missing password-file value|--admin-password-file requires a value|--admin-password-file
 missing listen-port value|--listen-port requires a value|--listen-port
@@ -336,6 +339,129 @@ PORTS
     done
     expect_success "63-byte --admin-user" run_installer "${root}" \
         --admin-user "$(printf 'a%.0s' {1..63})"
+}
+
+test_release_selection() {
+    section "explicit release selection"
+    local root id version arch native pg package mode
+    for id in ubuntu rocky; do
+        version=24.04
+        [[ "${id}" != rocky ]] || version=9.4
+        for arch in x86_64 aarch64; do
+            native="${arch}"
+            if [[ "${id}" == ubuntu ]]; then
+                native=amd64
+                [[ "${arch}" != aarch64 ]] || native=arm64
+            fi
+            for pg in 17 18; do
+                root="$(new_root "${id}" "${version}")"
+                installer_env DOCUMENTDB_INSTALLER_TEST_UNAME_M="${arch}" \
+                    DOCUMENTDB_INSTALLER_TEST_NATIVE_ARCH="${native}"
+                expect_success "${id} ${arch} pg${pg} RC selection" \
+                    run_installer "${root}" --version v1.0-RC1 --pg-major "${pg}"
+                assert_has "RC warning" "No RC maintenance or supported upgrades."
+                assert_has "RC URL" "releases/download/v1.0-RC1/SHA256SUMS"
+                assert_lacks "RC does not request stable package" "install -y documentdb-${pg}"
+                if [[ "${id}" == ubuntu ]]; then
+                    package="ubuntu24.04-postgresql-${pg}-documentdb_1.0-0_${native}.deb"
+                else
+                    package="rhel9-postgresql${pg}-documentdb-1.0.0-1.el9.${native}.rpm"
+                fi
+                assert_has "exact extension asset" "${package}"
+                assert_has "RC runs setup" "documentdb-setup --yes --pg-version ${pg}"
+                assert_no_mutation "RC dry run"
+            done
+        done
+    done
+    installer_env
+    root="$(new_root ubuntu 24.04)"
+    expect_success "explicit stable" run_installer "${root}" --version stable
+    assert_has "stable transaction unchanged" "install -y documentdb-18"
+    assert_lacks "stable never downloads RC" "v1.0-RC1"
+    for mode in --packages-only --no-enable; do
+        expect_success "RC ${mode}" run_installer "${root}" --version v1.0-RC1 "${mode}"
+        if [[ "${mode}" == --packages-only ]]; then
+            assert_lacks "RC packages-only skips setup" "sudo documentdb-setup"
+        else
+            assert_has "RC no-enable reaches setup" "--listen-port 10260 --no-enable"
+        fi
+    done
+    for package in documentdb-18 documentdb-common postgresql18-documentdb postgresql-18-documentdb; do
+        installer_env DOCUMENTDB_INSTALLER_TEST_EXISTING_PACKAGES="${package}"
+        expect_failure "RC refuses installed ${package}" "Release candidates require a clean host" \
+            run_installer "${root}" --version v1.0-RC1 --packages-only
+    done
+    installer_env
+    write_state_file "${root}" 17 setup.conf
+    expect_failure "RC refuses other PG state" "Release candidates require a clean host" \
+        run_installer "${root}" --version v1.0-RC1
+    root="$(new_root ubuntu 24.04)"
+    mkdir -p "${root}/var/lib/documentdb-local/17/data"
+    expect_failure "RC refuses other PG data" "Release candidates require a clean host" \
+        run_installer "${root}" --version v1.0-RC1
+}
+
+test_release_checksums() {
+    section "release download verification"
+    local library="${WORK_DIR}/release-library.sh" fixture="${WORK_DIR}/release-fixture"
+    local runner="${WORK_DIR}/release-runner.sh" name mode
+    sed '/^# BEGIN EXECUTION BARRIER$/,$d' "${INSTALLER}" > "${library}"
+    mkdir -p "${fixture}"
+    for name in ubuntu24.04-documentdb-18_1.0.0_all.deb \
+        ubuntu24.04-documentdb-common_1.0.0_all.deb \
+        ubuntu24.04-documentdb-postgresql-tools_1.0.0_all.deb \
+        ubuntu24.04-documentdb-gateway_1.0.0_arm64.deb \
+        ubuntu24.04-postgresql-18-documentdb_1.0-0_arm64.deb; do
+        printf 'fixture for %s\n' "${name}" > "${fixture}/${name}"
+    done
+    (cd "${fixture}" && sha256sum ./*.deb | sed 's|  ./|  |' > SHA256SUMS)
+    cat > "${runner}" <<'RUNNER'
+#!/bin/sh
+set -eu
+. "$1"
+fixture="$2"
+mode="$3"
+RELEASE_VERSION=v1.0-RC1
+PACKAGE_FAMILY=apt
+APT_ARCH=arm64
+TMP_DIR="$(mktemp -d)"
+RC_MANIFEST_SHA256="$(sha256sum "${fixture}/SHA256SUMS" | awk '{print $1}')"
+strict_curl() {
+    name="${1##*/}"
+    [ "${mode}:${name}" != "missing:ubuntu24.04-documentdb-common_1.0.0_all.deb" ] || return 22
+    cp "${fixture}/${name}" "$2"
+    if [ "${mode}" = corrupt ] && [ "${name}" != SHA256SUMS ]; then
+        printf 'corrupt\n' >> "$2"
+    elif [ "${mode}:${name}" = manifest:SHA256SUMS ]; then
+        printf '\n' >> "$2"
+    fi
+}
+apt_get() {
+    printf 'TRANSACTION'
+    for argument in "$@"; do printf ' <%s>' "${argument}"; done
+    printf '\n'
+}
+install_release_packages
+RUNNER
+    expect_success "verified selected packages" sh "${runner}" "${library}" "${fixture}" good
+    assert_has "verified packages reach one transaction" "TRANSACTION <install> <-y>"
+    assert_has "verified transaction contains common" "ubuntu24.04-documentdb-common_1.0.0_all.deb>"
+    assert_has "verified transaction contains gateway" "ubuntu24.04-documentdb-gateway_1.0.0_arm64.deb>"
+    for mode in missing corrupt manifest; do
+        case "${mode}" in
+            missing) name="Cannot download" ;;
+            corrupt) name="Checksum verification failed" ;;
+            manifest) name="checksum manifest does not match" ;;
+        esac
+        expect_failure "${mode} release download" "${name}" \
+            sh "${runner}" "${library}" "${fixture}" "${mode}"
+        assert_lacks "${mode} never installs packages or falls back" "TRANSACTION"
+    done
+    sed '/ubuntu24.04-documentdb-common_/d' "${fixture}/SHA256SUMS" > "${fixture}/missing-sums"
+    cp "${fixture}/missing-sums" "${fixture}/SHA256SUMS"
+    expect_failure "missing asset checksum" "Missing or invalid checksum" \
+        sh "${runner}" "${library}" "${fixture}" good
+    assert_lacks "missing checksum never installs" "TRANSACTION"
 }
 
 # --------------------------------------------------------------------------
@@ -780,6 +906,8 @@ setup_mocks
 test_supported_matrix
 test_unsupported_hosts
 test_arguments
+test_release_selection
+test_release_checksums
 test_derived_state
 test_brownfield_refusal
 test_mode_flags

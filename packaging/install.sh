@@ -2,7 +2,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 #
-# Clean-host bootstrap for the current stable DocumentDB stand-alone packages.
+# Clean-host bootstrap for stable or explicitly selected RC packages.
 #
 # The script trusts the public package repositories, installs
 # documentdb-<major>, and hands provisioning to documentdb-setup. It keeps no
@@ -45,6 +45,8 @@ DOCUMENTDB_APT_REPOSITORY_URL="https://documentdb.io/deb"
 DOCUMENTDB_RPM_REPOSITORY_URL="https://documentdb.io/rpm/rhel9"
 
 PG_MAJOR="${DEFAULT_PG_MAJOR}"
+RELEASE_VERSION="stable"
+RC_MANIFEST_SHA256="68a8a2abfc2a2c9eea7fb937be05fa49c195d4abd3e6765b81105463a68e5d22"
 ADMIN_USER="${DEFAULT_ADMIN_USER}"
 ADMIN_USER_EXPLICIT="false"
 ADMIN_PASSWORD_FILE=""
@@ -104,6 +106,9 @@ Supported hosts:
   RHEL/Rocky/Alma/CentOS Stream 9   x86_64, aarch64
 
 Options:
+  --version <stable|v1.0-RC1>  Release selection (default: stable repository).
+                              RC1 is for disposable testing only, with no
+                              maintenance or supported upgrades.
   --pg-major <17|18>          PostgreSQL major (default: 18)
   --admin-user <USER>         Initial DocumentDB administrator (default: admin)
   --admin-password-file <FILE>
@@ -241,6 +246,11 @@ validate_listen_port() {
 parse_arguments() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
+            --version)
+                [ "$#" -ge 2 ] || die "--version requires a value."
+                RELEASE_VERSION="$2"
+                shift 2
+                ;;
             --pg-major)
                 [ "$#" -ge 2 ] || die "--pg-major requires a value."
                 PG_MAJOR="$2"
@@ -280,6 +290,10 @@ parse_arguments() {
 }
 
 validate_arguments() {
+    case "${RELEASE_VERSION}" in
+        stable|v1.0-RC1) ;;
+        *) die "--version must be stable or v1.0-RC1." ;;
+    esac
     case "${PG_MAJOR}" in
         17|18) ;;
         *) die "--pg-major must be 17 or 18." ;;
@@ -513,6 +527,7 @@ validate_native_environment() {
     for required in grep awk sed sort find mktemp install cp stat curl; do
         require_command "${required}"
     done
+    [ "${RELEASE_VERSION}" = "stable" ] || require_command sha256sum
 
     if [ "${PACKAGE_FAMILY}" = "apt" ]; then
         require_command apt-get
@@ -577,7 +592,7 @@ list_documentdb_packages() {
             'documentdb*' 'postgresql-*-documentdb' 2>/dev/null |
             awk '$1 ~ /^.i$/ { print $2 }' | sort -u || true
     else
-        rpm -qa --qf '%{NAME}\n' 'documentdb*' 2>/dev/null | sort -u || true
+        rpm -qa --qf '%{NAME}\n' 'documentdb*' 'postgresql*-documentdb' 2>/dev/null | sort -u || true
     fi
 }
 
@@ -589,6 +604,13 @@ detect_installation_state() {
     SETUP_CONFIGURED="false"
 
     installed_packages="$(list_documentdb_packages)"
+    if [ "${RELEASE_VERSION}" != "stable" ]; then
+        if [ -n "${installed_packages}" ] ||
+            directory_has_entries "$(system_path "${STATE_ROOT}")" ||
+            directory_has_entries "$(system_path "${DATA_ROOT}")"; then
+            die "Release candidates require a clean host with no DocumentDB packages, configuration, or data. Upgrades into, between, or out of RCs are not supported."
+        fi
+    fi
     other_majors="$(
         printf '%s\n' "${installed_packages}" |
             sed -n -E 's/^documentdb-([0-9]+)([-.].*)?$/\1/p' |
@@ -1064,6 +1086,10 @@ validate_required_setup_inputs() {
 
 print_plan() {
     log "Installation plan"
+    printf '  Release:          %s\n' "${RELEASE_VERSION}"
+    if [ "${RELEASE_VERSION}" != "stable" ]; then
+        warn "${RELEASE_VERSION} is for disposable testing only, not production. No RC maintenance or supported upgrades."
+    fi
     printf '  Operating system: %s\n' "${OS_DISPLAY}"
     if [ "${PACKAGE_FAMILY}" = "apt" ]; then
         printf '  Architecture:     %s\n  Package manager:  apt\n' "${APT_ARCH}"
@@ -1116,7 +1142,11 @@ install_ubuntu() {
     fi
 
     apt_get update
-    apt_get install -y "documentdb-${PG_MAJOR}"
+    if [ "${RELEASE_VERSION}" = "stable" ]; then
+        apt_get install -y "documentdb-${PG_MAJOR}"
+    else
+        install_release_packages
+    fi
 }
 
 rpm_package_installed() {
@@ -1187,7 +1217,72 @@ install_rhel_family() {
 
     run_root_no_stdin dnf clean expire-cache
     run_root_no_stdin dnf -y makecache --refresh
-    run_root_no_stdin dnf install -y "documentdb-${PG_MAJOR}"
+    if [ "${RELEASE_VERSION}" = "stable" ]; then
+        run_root_no_stdin dnf install -y "documentdb-${PG_MAJOR}"
+    else
+        install_release_packages
+    fi
+}
+
+release_package_names() {
+    if [ "${PACKAGE_FAMILY}" = "apt" ]; then
+        printf '%s\n' \
+            "ubuntu24.04-documentdb-${PG_MAJOR}_1.0.0_all.deb" \
+            "ubuntu24.04-documentdb-common_1.0.0_all.deb" \
+            "ubuntu24.04-documentdb-postgresql-tools_1.0.0_all.deb" \
+            "ubuntu24.04-documentdb-gateway_1.0.0_${APT_ARCH}.deb" \
+            "ubuntu24.04-postgresql-${PG_MAJOR}-documentdb_1.0-0_${APT_ARCH}.deb"
+    else
+        printf '%s\n' \
+            "documentdb-${PG_MAJOR}-1.0.0-1.noarch.rpm" \
+            "documentdb-common-1.0.0-1.noarch.rpm" \
+            "documentdb-postgresql-tools-1.0.0-1.noarch.rpm" \
+            "documentdb-gateway-1.0.0-1.el9.${RPM_ARCH}.rpm" \
+            "rhel9-postgresql${PG_MAJOR}-documentdb-1.0.0-1.el9.${RPM_ARCH}.rpm"
+    fi
+}
+
+install_release_packages() {
+    release_url="https://github.com/documentdb/documentdb/releases/download/${RELEASE_VERSION}"
+    if [ "${DRY_RUN}" = "true" ]; then
+        release_dir="<temporary-directory>/release"
+        log "Would download ${release_url}/SHA256SUMS and require SHA256 ${RC_MANIFEST_SHA256}."
+    else
+        release_dir="${TMP_DIR}/release"
+        mkdir -m 0700 "${release_dir}"
+        strict_curl "${release_url}/SHA256SUMS" "${release_dir}/SHA256SUMS" ||
+            die "Cannot download ${RELEASE_VERSION} checksums; no stable fallback."
+        (
+            cd "${release_dir}"
+            printf '%s  SHA256SUMS\n' "${RC_MANIFEST_SHA256}" | sha256sum --check --status
+        ) || die "${RELEASE_VERSION} checksum manifest does not match the pinned release."
+    fi
+
+    set --
+    for release_package in $(release_package_names); do
+        if [ "${DRY_RUN}" = "true" ]; then
+            log "Would download and checksum-verify ${release_url}/${release_package}."
+        else
+            release_checksum="$(awk -v name="${release_package}" '$2 == name { print $1 }' "${release_dir}/SHA256SUMS")"
+            case "${release_checksum}" in
+                ''|*[!0-9a-fA-F]*) die "Missing or invalid checksum for ${release_package}." ;;
+            esac
+            [ "${#release_checksum}" -eq 64 ] ||
+                die "Expected one SHA256 checksum for ${release_package}."
+            strict_curl "${release_url}/${release_package}" "${release_dir}/${release_package}" ||
+                die "Cannot download ${release_package}; no stable fallback."
+            (
+                cd "${release_dir}"
+                printf '%s  %s\n' "${release_checksum}" "${release_package}" | sha256sum --check --status
+            ) || die "Checksum verification failed for ${release_package}."
+        fi
+        set -- "$@" "${release_dir}/${release_package}"
+    done
+    if [ "${PACKAGE_FAMILY}" = "apt" ]; then
+        apt_get install -y "$@"
+    else
+        run_root_no_stdin dnf install -y "$@"
+    fi
 }
 
 run_setup() {

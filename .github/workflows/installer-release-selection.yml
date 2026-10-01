@@ -1,0 +1,71 @@
+name: Installer release selection
+
+on:
+  pull_request:
+    paths:
+      - packaging/install.sh
+      - packaging/test_packages/test-install-script.sh
+      - .github/workflows/installer-release-selection.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-install:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { image: 'ubuntu:24.04', family: apt, pg: '18' }
+          - { image: 'rockylinux:9', family: rpm, pg: '17' }
+        version: [stable, v1.0-RC1]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check installer contract
+        if: matrix.target.family == 'apt' && matrix.version == 'stable'
+        run: bash packaging/test_packages/test-install-script.sh
+      - name: Install selected release on a clean native host
+        env:
+          IMAGE: ${{ matrix.target.image }}
+          FAMILY: ${{ matrix.target.family }}
+          PG_MAJOR: ${{ matrix.target.pg }}
+          RELEASE_VERSION: ${{ matrix.version }}
+        run: |
+          docker run --rm \
+            -v "$PWD/packaging/install.sh:/install.sh:ro" \
+            -e FAMILY -e PG_MAJOR -e RELEASE_VERSION \
+            "$IMAGE" sh -eu -c '
+              if [ "$FAMILY" = apt ]; then
+                apt-get update
+                apt-get install -y curl ca-certificates
+              else
+                dnf install -y curl ca-certificates
+              fi
+              set -- --yes --packages-only --pg-major "$PG_MAJOR"
+              if [ "$RELEASE_VERSION" != stable ]; then
+                set -- "$@" --version "$RELEASE_VERSION"
+              fi
+              sh /install.sh "$@"
+              if [ "$RELEASE_VERSION" = stable ]; then
+                expected=0.117
+              else
+                expected=1.0
+              fi
+              if [ "$FAMILY" = apt ]; then
+                for package in "documentdb-$PG_MAJOR" documentdb-common \
+                    documentdb-postgresql-tools documentdb-gateway; do
+                  actual=$(dpkg-query -W -f="\${Version}" "$package")
+                  test "$actual" = "$expected.0"
+                done
+                test "$(dpkg-query -W -f="\${Version}" "postgresql-$PG_MAJOR-documentdb")" = "$expected-0"
+              else
+                for package in "documentdb-$PG_MAJOR" documentdb-common \
+                    documentdb-postgresql-tools documentdb-gateway \
+                    "postgresql$PG_MAJOR-documentdb"; do
+                  test "$(rpm -q --qf "%{VERSION}" "$package")" = "$expected.0"
+                done
+              fi
+            '

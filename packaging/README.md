@@ -40,7 +40,7 @@ Download the installer before executing it:
 
 ```sh
 curl -fsSLo documentdb-install.sh \
-  https://github.com/documentdb/documentdb/releases/latest/download/install.sh &&
+  https://documentdb.io/install.sh &&
 sh documentdb-install.sh
 ```
 
@@ -48,7 +48,7 @@ Direct piping is also compatible:
 
 ```sh
 curl -fsSL \
-  https://github.com/documentdb/documentdb/releases/latest/download/install.sh |
+  https://documentdb.io/install.sh |
 sh
 ```
 
@@ -57,6 +57,21 @@ PostgreSQL 18 is the default. An interactive PostgreSQL 17 install is:
 ```sh
 sh documentdb-install.sh --pg-major 17
 ```
+
+The default follows the stable package repository, currently `v0.117-0`.
+To test RC1 on a clean, disposable host, explicitly select it:
+
+```sh
+sh documentdb-install.sh --version v1.0-RC1
+```
+
+This downloads the five matching packages from the RC1 release and verifies
+them against a pinned checksum manifest before installation. PostgreSQL 17
+is also supported with `--pg-major 17`. RC1 is not maintained and has no
+supported upgrade path; existing DocumentDB packages, configuration, or data
+are refused. Invalid selections and failed downloads never fall back to stable.
+The original installer attached to the RC1 release lacks this option; use
+the website installer above.
 
 For unattended setup, provide a protected password file and acknowledge the
 listener behavior:
