@@ -45,6 +45,7 @@ jobs:
             -v "$PWD/packaging/install.sh:/install.sh:ro" \
             -e FAMILY -e PG_MAJOR -e RELEASE_VERSION -e STABLE_VERSION \
             "$IMAGE" sh -eu -c '
+              mkdir -p /run/lock
               if [ "$FAMILY" = apt ]; then
                 apt-get update
                 apt-get install -y curl ca-certificates
